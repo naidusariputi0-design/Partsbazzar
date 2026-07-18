@@ -1,0 +1,103 @@
+rules_version = '2';
+
+// PartsBaazar Firestore security rules.
+//
+// Design notes:
+//  - WRITES are role-enforced server-side (this is the real protection: a
+//    mechanic can't rewrite prices or mark someone else's order delivered).
+//  - READS are currently open to any signed-in user. That's because the client
+//    (index.html) subscribes to the WHOLE users/products/orders collections. A
+//    per-document read rule would make those unscoped collection queries fail
+//    entirely (Firestore rejects a query that *could* return unreadable docs).
+//    To lock reads down (issue #5 — clients shouldn't download every user's
+//    phone number), the client must switch to scoped queries, e.g.
+//      ordersCol.where('mechanicId','==',uid)   // mechanic
+//      ordersCol.where('shopOwnerId','==',uid)   // shop
+//    and then the read rules below can be tightened to match. Left open for now
+//    so the app keeps working.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    // The caller's role, read from their own /users/{uid} profile doc.
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    // True if a write touches ONLY the given fields (and nothing else).
+    function onlyChanged(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    // ---------------- users ----------------
+    match /users/{uid} {
+      allow read: if signedIn();
+
+      // You may only create your OWN profile, and may not sign yourself up as
+      // an admin (admins must be promoted out-of-band, e.g. via the console).
+      allow create: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.role in ['mechanic', 'shop', 'delivery'];
+
+      // You may only edit your own profile, and may not change your own role.
+      allow update: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.role == resource.data.role;
+
+      allow delete: if false;
+    }
+
+    // ---------------- products ----------------
+    match /products/{productId} {
+      allow read: if signedIn();
+
+      // Only a shop owner can list a product, and only under their own id.
+      allow create: if signedIn()
+                    && myRole() == 'shop'
+                    && request.resource.data.shopOwnerId == request.auth.uid;
+
+      // The owning shop can edit anything on its product. Anyone else who is
+      // signed in may change ONLY the `stock` field — this is what lets a
+      // mechanic's order deduct stock and a cancel/reject restore it.
+      // (In a hardened build this stock mutation would move to a Cloud Function
+      // triggered by order writes, so clients never touch product stock at all.)
+      allow update: if signedIn() && (
+                      (myRole() == 'shop' && resource.data.shopOwnerId == request.auth.uid)
+                      || onlyChanged(['stock'])
+                    );
+
+      allow delete: if signedIn()
+                    && myRole() == 'shop'
+                    && resource.data.shopOwnerId == request.auth.uid;
+    }
+
+    // ---------------- orders ----------------
+    match /orders/{orderId} {
+      allow read: if signedIn();
+
+      // Only a mechanic can place an order, only as themselves, and it must
+      // start in the 'Placed' state.
+      allow create: if signedIn()
+                    && myRole() == 'mechanic'
+                    && request.resource.data.mechanicId == request.auth.uid
+                    && request.resource.data.status == 'Placed';
+
+      // Who can advance an order:
+      //  - admin: anything
+      //  - the owning shop: accept / reject / pack / dispatch
+      //  - the assigned rider: mark delivered
+      //  - the mechanic who placed it: cancel it
+      allow update: if signedIn() && (
+                      myRole() == 'admin'
+                      || (myRole() == 'shop'     && resource.data.shopOwnerId == request.auth.uid)
+                      || (myRole() == 'delivery' && resource.data.deliveryBoyId == request.auth.uid)
+                      || (resource.data.mechanicId == request.auth.uid
+                          && request.resource.data.status == 'Cancelled')
+                    );
+
+      allow delete: if false;
+    }
+  }
+}

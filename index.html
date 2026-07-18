@@ -488,6 +488,32 @@ a{color:inherit;}
 .pc-stock-flag.low{background:rgba(255,199,44,0.18); color:var(--safety-yellow);}
 .pc-stock-flag.out{background:rgba(255,71,87,0.18); color:var(--hazard-red);}
 .pc-body{padding:14px 16px; flex:1; display:flex; flex-direction:column; gap:8px;}
+
+/* slow-moving stock flag + quick price-drop controls (Update Stock table) */
+.slow-flag{
+  display:inline-flex; align-items:center; gap:4px;
+  font-family:var(--font-mono); font-size:0.65rem; font-weight:600;
+  padding:3px 8px; border-radius:10px;
+  text-transform:uppercase; letter-spacing:0.03em;
+  background:rgba(255,106,26,0.16); color:var(--safety-orange);
+  white-space:nowrap;
+}
+.ok-flag{
+  display:inline-flex; align-items:center; gap:4px;
+  font-family:var(--font-mono); font-size:0.65rem; font-weight:600;
+  padding:3px 8px; border-radius:10px;
+  text-transform:uppercase; letter-spacing:0.03em;
+  background:rgba(56,217,150,0.14); color:var(--go-green);
+}
+tr.row-slow-moving{background:rgba(255,106,26,0.06);}
+.discount-btns{display:flex; gap:4px; margin-top:6px; flex-wrap:wrap;}
+.discount-btn{
+  font-family:var(--font-mono); font-size:0.65rem; font-weight:600;
+  background:var(--charcoal-950); border:1.5px solid var(--safety-orange-dim);
+  color:var(--safety-orange); border-radius:var(--radius-s);
+  padding:4px 8px; transition:all .12s ease;
+}
+.discount-btn:hover{background:var(--safety-orange); color:var(--charcoal-950); border-color:var(--safety-orange);}
 .pc-brand-badge{
   align-self:flex-start;
   font-family:var(--font-mono); font-weight:600;
@@ -747,10 +773,45 @@ footer.app-footer{
 <div id="app" class="app"></div>
 <div id="toast-stack" role="status" aria-live="polite"></div>
 
+<!-- ============ FIREBASE ============
+     1. console.firebase.google.com -> your project -> Build > Authentication > Sign-in method > enable "Phone"
+        (real SMS OTPs to real numbers require the Blaze pay-as-you-go billing plan; Spark/free only allows
+        the "test phone numbers" you add under Authentication > Sign-in method > Phone > Phone numbers for testing)
+     2. Build > Firestore Database > Rules -> paste the rules block I gave you in chat, then Publish
+     ==================================== -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<!-- ============ RAZORPAY (test mode) ============
+     1. dashboard.razorpay.com -> sign up (free) -> stay in "Test Mode" (toggle top-right)
+     2. Settings > API Keys > Generate Test Key -> copy the "Key Id" (starts with rzp_test_)
+     3. Paste it into RAZORPAY_KEY_ID below. The Key Id is safe to expose client-side (it's not the secret).
+     ==================================== -->
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyAHXTidTpFV5gwVg8gArRdUeFa73a70ItM",
+  authDomain: "partsbazzar-625e4.firebaseapp.com",
+  projectId: "partsbazzar-625e4",
+  storageBucket: "partsbazzar-625e4.firebasestorage.app",
+  messagingSenderId: "644958916700",
+  appId: "1:644958916700:web:82086bef595e8b48a51699"
+};
+firebase.initializeApp(firebaseConfig);
+const firestore = firebase.firestore();
+const fbAuth = firebase.auth();
+const usersCol = firestore.collection('users');
+const productsCol = firestore.collection('products');
+const ordersCol = firestore.collection('orders');
+
+const RAZORPAY_KEY_ID = "rzp_test_TETLiZODbIwfcn"; // Razorpay TEST Key Id
+</script>
+
 <script>
 /* =========================================================
    PARTSBAAZAR — APP LOGIC
    ========================================================= */
+
 
 const DB_KEY = 'pb_db_v1';
 const SESSION_KEY = 'pb_session_v1';
@@ -768,60 +829,132 @@ const ROLE_META = {
   admin:{icon:'🛡️', label:'Admin', cls:'admin'}
 };
 
-/* ---------- fake DB ---------- */
-function seedDB(){
-  const shopId = 'u_shop1';
-  const shop2Id = 'u_shop2';
-  const users = [
-    {id:'u_mech1', name:'Ravi Kumar', phone:'9000000001', password:'1234', role:'mechanic'},
-    {id:shopId, name:'Anand Auto Spares', phone:'9000000002', password:'1234', role:'shop'},
-    {id:shop2Id, name:'Sri Ganesh Motor Parts', phone:'9000000003', password:'1234', role:'shop'},
-    {id:'u_del1', name:'Suresh Yadav', phone:'9000000004', password:'1234', role:'delivery'},
-    {id:'u_del2', name:'Mahesh Reddy', phone:'9000000005', password:'1234', role:'delivery'},
-    {id:'u_admin1', name:'Admin', phone:'9000000000', password:'admin', role:'admin'},
+/* ---------- seed data ----------
+   Only PRODUCTS get seeded now — real accounts come from real phone-OTP
+   sign-ups, and real orders come from real mechanics buying real stock, so
+   there's no more fake password-protected demo users or fake order history. */
+function seedDemoProducts(){
+  const demoShopId = 'demo-shop-1';
+  return [
+    {name:'Chain Sprocket Kit', brand:'Hero', category:'Drivetrain', partNumber:'HR-CS-1102', price:850, stock:24, emoji:'⚙️', shopOwnerId:demoShopId},
+    {name:'Front Disc Brake Pad', brand:'Honda', category:'Brakes', partNumber:'HD-BP-2231', price:420, stock:5, emoji:'🛑', shopOwnerId:demoShopId},
+    {name:'Halogen Headlight Bulb', brand:'Bajaj', category:'Electrical', partNumber:'BJ-HL-4471', price:180, stock:60, emoji:'💡', shopOwnerId:demoShopId},
+    {name:'Rear Shock Absorber', brand:'Yamaha', category:'Suspension', partNumber:'YM-SA-9012', price:1450, stock:12, emoji:'🛠️', shopOwnerId:demoShopId},
   ];
-  const products = [
-    {id:'p1', name:'Chain Sprocket Kit', brand:'Hero', category:'Drivetrain', partNumber:'HR-CS-1102', price:850, stock:24, emoji:'⚙️', shopOwnerId:shopId},
-    {id:'p2', name:'Front Disc Brake Pad', brand:'Honda', category:'Brakes', partNumber:'HD-BP-2231', price:420, stock:5, emoji:'🛑', shopOwnerId:shopId},
-    {id:'p3', name:'Clutch Plate Set', brand:'TVS', category:'Engine', partNumber:'TVS-CP-0087', price:610, stock:0, emoji:'🔩', shopOwnerId:shopId},
-    {id:'p4', name:'Halogen Headlight Bulb', brand:'Bajaj', category:'Electrical', partNumber:'BJ-HL-4471', price:180, stock:60, emoji:'💡', shopOwnerId:shop2Id},
-    {id:'p5', name:'Rear Shock Absorber', brand:'Yamaha', category:'Suspension', partNumber:'YM-SA-9012', price:1450, stock:12, emoji:'🛠️', shopOwnerId:shop2Id},
-    {id:'p6', name:'Carburetor Assembly', brand:'Suzuki', category:'Engine', partNumber:'SZ-CB-3345', price:1980, stock:8, emoji:'🧰', shopOwnerId:shop2Id},
-    {id:'p7', name:'Leather Seat Cover', brand:'Royal Enfield', category:'Body', partNumber:'RE-SC-5521', price:1100, stock:15, emoji:'🪑', shopOwnerId:shopId},
-    {id:'p8', name:'Engine Oil Filter', brand:'Honda', category:'Engine', partNumber:'HD-OF-1190', price:150, stock:3, emoji:'🛢️', shopOwnerId:shopId},
-    {id:'p9', name:'Alloy Wheel Rim 17"', brand:'TVS', category:'Wheels', partNumber:'TVS-WR-6678', price:2650, stock:9, emoji:'⭕', shopOwnerId:shop2Id},
-    {id:'p10', name:'Digital Speedometer', brand:'Bajaj', category:'Electrical', partNumber:'BJ-SP-8820', price:1350, stock:0, emoji:'⏱️', shopOwnerId:shopId},
-    {id:'p11', name:'Handle Bar Grip Set', brand:'Yamaha', category:'Body', partNumber:'YM-HG-2214', price:220, stock:40, emoji:'🏍️', shopOwnerId:shop2Id},
-    {id:'p12', name:'Battery 12V 5Ah', brand:'Royal Enfield', category:'Electrical', partNumber:'RE-BT-7743', price:1750, stock:6, emoji:'🔋', shopOwnerId:shopId},
-  ];
-  const orders = [
-    {id:'ORD-1001', mechanicId:'u_mech1', shopOwnerId:shopId, deliveryBoyId:'u_del1',
-      items:[{productId:'p1',name:'Chain Sprocket Kit',emoji:'⚙️',qty:1,price:850}],
-      status:'Out for Delivery', createdAt: Date.now()-3600*1000*5},
-    {id:'ORD-1002', mechanicId:'u_mech1', shopOwnerId:shop2Id, deliveryBoyId:null,
-      items:[{productId:'p4',name:'Halogen Headlight Bulb',emoji:'💡',qty:2,price:180}],
-      status:'Placed', createdAt: Date.now()-3600*1000*1},
-  ];
-  const db = {users, products, orders};
-  localStorage.setItem(DB_KEY, JSON.stringify(db));
-  return db;
 }
 
-function loadDB(){
-  const raw = localStorage.getItem(DB_KEY);
-  if(!raw) return seedDB();
-  try{ return JSON.parse(raw); }catch(e){ return seedDB(); }
-}
-function saveDB(db){ localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+/* ---------- Firestore-backed DB ----------
+   Data now lives in three real Firestore collections — users, products,
+   orders — instead of one shared blob. Each has its own real-time listener,
+   so when a mechanic places an order, the shop owner's screen on a totally
+   different device updates within about a second, no refresh needed. Every
+   write goes straight to Firestore through the helpers below; localStorage
+   is used only to instant-paint the last-known state while we reconnect. */
+let DB = {users:[], products:[], orders:[]};
+let dbReady = {users:false, products:false, orders:false};
+let bootFired = false;
 
-let DB = loadDB();
+function withDocIds(snap){ return snap.docs.map(d=>({id:d.id, ...d.data()})); }
+
+function onCollectionChange(key){
+  return (snap)=>{
+    DB[key] = withDocIds(snap);
+    localStorage.setItem(DB_KEY, JSON.stringify(DB));
+    dbReady[key] = true;
+    if(dbReady.users && dbReady.products && dbReady.orders){
+      if(!bootFired){ bootFired = true; boot(); }
+      else { refreshCurrentView(); }
+    }
+  };
+}
+function onCollectionError(key){
+  return (err)=>{
+    console.error('Firestore '+key+' listener error:', err);
+    toast('Live sync unavailable — check your Firebase config/rules', 'error', '⚠️');
+    // Don't leave a signed-in user frozen on the "Connecting…" screen forever.
+    // Mark this collection "ready" (with whatever cached/empty data we have) so
+    // boot() can still fire and paint the app instead of hanging.
+    dbReady[key] = true;
+    if(dbReady.users && dbReady.products && dbReady.orders){
+      if(!bootFired){ bootFired = true; boot(); }
+      else { refreshCurrentView(); }
+    }
+  };
+}
+
+let unsubFns = [];
+
+let seedAttempted = false;
+
+function maybeSeedProducts(){
+  // Seed a few demo parts the first time this project's products collection is
+  // empty. Guarded so it runs once per session, and writes use stable doc IDs
+  // (the part number) via set() so it's idempotent — two devices seeding at the
+  // same moment can't create duplicates.
+  if(seedAttempted || !dbReady.products || DB.products.length!==0) return;
+  seedAttempted = true;
+  seedDemoProducts().forEach(p=>{
+    productsCol.doc(p.partNumber).set(p).catch(e=>console.error('Seed product failed:',e));
+  });
+}
+
+function startRealtimeDB(){
+  // onAuthStateChanged can fire repeatedly (token refresh, re-login). Don't
+  // stack duplicate listeners — if we're already subscribed, do nothing.
+  if(unsubFns.length) return;
+  const cachedRaw = localStorage.getItem(DB_KEY);
+  if(cachedRaw){
+    try{ DB = JSON.parse(cachedRaw); }catch(e){ /* ignore corrupt cache */ }
+  }
+  unsubFns.push(usersCol.onSnapshot(onCollectionChange('users'), onCollectionError('users')));
+  unsubFns.push(productsCol.onSnapshot((snap)=>{
+    onCollectionChange('products')(snap);
+    maybeSeedProducts();
+  }, onCollectionError('products')));
+  unsubFns.push(ordersCol.onSnapshot(onCollectionChange('orders'), onCollectionError('orders')));
+}
+
+/* stop all Firestore listeners — call this on sign-out so they don't keep
+   firing (and erroring) against an auth token that's no longer valid */
+function stopRealtimeDB(){
+  unsubFns.forEach(fn=>{ try{ fn(); }catch(e){} });
+  unsubFns = [];
+  dbReady = {users:false, products:false, orders:false};
+  bootFired = false;
+  seedAttempted = false;
+}
+
+function refreshCurrentView(){
+  if(!session){ /* leave auth screen as-is so an in-progress OTP entry isn't wiped */ return; }
+  const contentEl = document.querySelector('.content');
+  if(contentEl){ renderInPlace(); } else { render(); }
+}
+
+/* ---------- Firestore CRUD helpers (replace the old single saveDB(DB)) ---------- */
+function addProductDoc(data){
+  return productsCol.add(data).catch(err=>{ console.error(err); toast('Could not save product', 'error', '⚠️'); });
+}
+function updateProductDoc(id, patch){
+  return productsCol.doc(id).update(patch).catch(err=>{ console.error(err); toast('Could not update product', 'error', '⚠️'); });
+}
+function addOrderDoc(data){
+  return ordersCol.add(data).catch(err=>{ console.error(err); toast('Could not place order', 'error', '⚠️'); });
+}
+function updateOrderDoc(id, patch){
+  return ordersCol.doc(id).update(patch).catch(err=>{ console.error(err); toast('Could not update order', 'error', '⚠️'); });
+}
+function upsertUserDoc(uid, data){
+  return usersCol.doc(uid).set(data, {merge:true}).catch(err=>{ console.error(err); toast('Could not save profile', 'error', '⚠️'); });
+}
+
 let session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
 let cart = JSON.parse(localStorage.getItem('pb_cart_'+ (session?session.id:'anon')) || '[]');
-let state = { authTab:'login', selectedRole:'mechanic', nav:'browse', search:'', brandFilter:'All', categoryFilter:'All', authError:'' };
+let state = { authTab:'login', selectedRole:'mechanic', nav:'browse', search:'', brandFilter:'All', categoryFilter:'All', authError:'', otpStage:'phone', confirmationResult:null, pendingPhone:'' };
 
 function saveCart(){
   localStorage.setItem('pb_cart_'+session.id, JSON.stringify(cart));
 }
+
 
 /* ---------- helpers ---------- */
 function uid(prefix){ return prefix + '_' + Math.random().toString(36).slice(2,9); }
@@ -919,17 +1052,14 @@ function renderAuth(){
         <div class="brand-icon-row">🔧 🏍️ ⚙️ 🛞</div>
       </div>
       <div class="auth-card">
-        <div class="auth-tabs">
-          <button class="auth-tab ${state.authTab==='login'?'active':''}" data-tab="login">Login</button>
-          <button class="auth-tab ${state.authTab==='signup'?'active':''}" data-tab="signup">Sign Up</button>
-        </div>
         <div class="auth-body">
           <div class="auth-error ${state.authError?'show':''}">${esc(state.authError)}</div>
-          ${state.authTab==='login' ? renderLoginForm() : renderSignupForm()}
+          ${renderOtpFlow()}
         </div>
       </div>
-      <div class="demo-note">Demo credentials autofill available below each role card · data stored locally in your browser</div>
+      <div class="demo-note">Secured with real phone number verification</div>
     </div>
+    <div id="recaptcha-container"></div>
   </div>`;
 }
 
@@ -944,93 +1074,117 @@ function roleCardsHTML(){
   </div>`;
 }
 
-function renderLoginForm(){
-  return `
-  <form id="login-form">
-    <label class="role-select-label">Select your role</label>
-    ${roleCardsHTML()}
-    <div class="field">
-      <label for="login-phone">Phone Number</label>
-      <input type="text" id="login-phone" placeholder="10-digit phone number" required>
-    </div>
-    <div class="field">
-      <label for="login-password">Password</label>
-      <div class="field-pw-wrap">
-        <input type="password" id="login-password" placeholder="••••••" required>
-        <button type="button" class="pw-toggle" data-pw-toggle="login-password" aria-label="Show password">👁</button>
-      </div>
-    </div>
-    <button type="submit" class="btn btn-primary">Enter Garage →</button>
-  </form>`;
-}
-
-function renderSignupForm(){
-  return `
-  <form id="signup-form">
-    <label class="role-select-label">I am a...</label>
-    ${roleCardsHTML()}
-    <div class="field">
-      <label for="signup-name">Full Name</label>
-      <input type="text" id="signup-name" placeholder="e.g. Ravi Kumar" required>
-    </div>
-    <div class="field-row">
+function renderOtpFlow(){
+  if(state.otpStage==='otp'){
+    return `
+    <form id="otp-form">
+      <label class="role-select-label">Enter the 6-digit code sent to +91 ${esc(state.pendingPhone)}</label>
+      <div class="field"><input type="text" id="auth-otp" inputmode="numeric" placeholder="••••••" maxlength="6" required autofocus></div>
+      <button type="submit" class="btn btn-primary">Verify &amp; Continue →</button>
+      <button type="button" class="btn btn-ghost" id="otp-back-btn" style="margin-top:10px; width:100%;">← Use a different number</button>
+    </form>`;
+  }
+  if(state.otpStage==='profile'){
+    return `
+    <form id="profile-form">
+      <label class="role-select-label">Verified! One last step — who are you?</label>
+      ${roleCardsHTML()}
       <div class="field">
-        <label for="signup-phone">Phone Number</label>
-        <input type="text" id="signup-phone" placeholder="10-digit phone number" required>
+        <label for="profile-name">Full Name</label>
+        <input type="text" id="profile-name" placeholder="e.g. Ravi Kumar" required autofocus>
       </div>
-      <div class="field">
-        <label for="signup-password">Password</label>
-        <div class="field-pw-wrap">
-          <input type="password" id="signup-password" placeholder="Create password" required>
-          <button type="button" class="pw-toggle" data-pw-toggle="signup-password" aria-label="Show password">👁</button>
-        </div>
-      </div>
+      <button type="submit" class="btn btn-primary">Create Account &amp; Enter →</button>
+    </form>`;
+  }
+  return `
+  <form id="phone-form">
+    <label class="role-select-label">Phone Number</label>
+    <div class="field">
+      <input type="tel" id="auth-phone" inputmode="numeric" placeholder="10-digit mobile number" maxlength="10" required autofocus>
     </div>
-    <button type="submit" class="btn btn-primary">Create Account & Enter →</button>
+    <button type="submit" class="btn btn-primary">Send OTP →</button>
   </form>`;
 }
 
 function bindAuthEvents(){
-  document.querySelectorAll('[data-pw-toggle]').forEach(btn=>{
-    btn.onclick = ()=>{
-      const input = document.getElementById(btn.dataset.pwToggle);
-      const showing = input.type === 'text';
-      input.type = showing ? 'password' : 'text';
-      btn.textContent = showing ? '👁' : '🙈';
-      btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
-    };
-  });
-  document.querySelectorAll('.auth-tab').forEach(t=>{
-    t.onclick = ()=>{ state.authTab = t.dataset.tab; state.authError=''; render(); };
-  });
   document.querySelectorAll('.role-card').forEach(c=>{
     c.onclick = ()=>{ state.selectedRole = c.dataset.role; render(); };
   });
-  const loginForm = document.getElementById('login-form');
-  if(loginForm){
-    loginForm.onsubmit = (e)=>{
+
+  const phoneForm = document.getElementById('phone-form');
+  if(phoneForm){
+    phoneForm.onsubmit = async (e)=>{
       e.preventDefault();
-      const phone = document.getElementById('login-phone').value.trim();
-      const pw = document.getElementById('login-password').value;
-      const user = DB.users.find(u=>u.phone===phone && u.role===state.selectedRole);
-      if(!user){ state.authError = 'No '+ROLE_META[state.selectedRole].label+' account found with that phone number.'; render(); return; }
-      if(user.password !== pw){ state.authError = 'Incorrect password. Try again, mechanic.'; render(); return; }
-      loginAs(user);
+      const raw = document.getElementById('auth-phone').value.trim();
+      if(!/^\d{10}$/.test(raw)){ state.authError = 'Enter a valid 10-digit phone number.'; render(); return; }
+      const e164 = '+91'+raw;
+      state.authError = '';
+      const submitBtn = phoneForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = true; submitBtn.textContent = 'Sending…';
+      try{
+        if(window.recaptchaVerifier){ try{ window.recaptchaVerifier.clear(); }catch(e2){} }
+        // compat SDK signature is (container, parameters) — it uses the default
+        // Firebase app automatically. Passing the Auth instance as a 3rd arg made
+        // the verifier read apiKey off the wrong object and throw invalid-api-key.
+        window.recaptchaVerifier = new firebase.auth.RecaptchaVerifier('recaptcha-container', {size:'invisible'});
+        const confirmationResult = await fbAuth.signInWithPhoneNumber(e164, window.recaptchaVerifier);
+        state.confirmationResult = confirmationResult;
+        state.pendingPhone = raw;
+        state.otpStage = 'otp';
+        render();
+        toast('OTP sent to +91 '+raw, 'success', '📲');
+      }catch(err){
+        console.error(err);
+        state.authError = err.message || 'Could not send OTP — check your Firebase Phone Auth setup.';
+        render();
+      }
     };
   }
-  const signupForm = document.getElementById('signup-form');
-  if(signupForm){
-    signupForm.onsubmit = (e)=>{
+
+  const otpForm = document.getElementById('otp-form');
+  if(otpForm){
+    otpForm.onsubmit = async (e)=>{
       e.preventDefault();
-      const name = document.getElementById('signup-name').value.trim();
-      const phone = document.getElementById('signup-phone').value.trim();
-      const pw = document.getElementById('signup-password').value;
-      if(!name || phone.length < 6 || !pw){ state.authError = 'Please fill all fields correctly.'; render(); return; }
-      if(DB.users.some(u=>u.phone===phone)){ state.authError = 'An account with this phone number already exists.'; render(); return; }
-      const user = {id: uid('u'), name, phone, password: pw, role: state.selectedRole};
-      DB.users.push(user);
-      saveDB(DB);
-      loginAs(user);
+      const code = document.getElementById('auth-otp').value.trim();
+      if(!code) return;
+      const submitBtn = otpForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = true; submitBtn.textContent = 'Verifying…';
+      try{
+        const result = await state.confirmationResult.confirm(code);
+        const fbUser = result.user;
+        const existingDoc = await usersCol.doc(fbUser.uid).get();
+        if(existingDoc.exists){
+          const profile = existingDoc.data();
+          loginAs({id: fbUser.uid, name: profile.name, role: profile.role});
+        } else {
+          state.authError = '';
+          state.otpStage = 'profile';
+          render();
+        }
+      }catch(err){
+        console.error(err);
+        state.authError = 'Incorrect or expired code. Try again.';
+        render();
+      }
+    };
+  }
+
+  const otpBackBtn = document.getElementById('otp-back-btn');
+  if(otpBackBtn){
+    otpBackBtn.onclick = ()=>{ state.otpStage='phone'; state.authError=''; render(); };
+  }
+
+  const profileForm = document.getElementById('profile-form');
+  if(profileForm){
+    profileForm.onsubmit = async (e)=>{
+      e.preventDefault();
+      const name = document.getElementById('profile-name').value.trim();
+      if(!name){ state.authError = 'Please enter your name.'; render(); return; }
+      const fbUser = fbAuth.currentUser;
+      if(!fbUser){ state.authError = 'Session expired — please try again.'; state.otpStage='phone'; render(); return; }
+      const profile = {name, phone: state.pendingPhone, role: state.selectedRole};
+      await upsertUserDoc(fbUser.uid, profile);
+      loginAs({id: fbUser.uid, name, role: state.selectedRole});
     };
   }
 }
@@ -1040,15 +1194,19 @@ function loginAs(user){
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   cart = JSON.parse(localStorage.getItem('pb_cart_'+session.id) || '[]');
   state.authError = '';
+  state.otpStage = 'phone';
+  state.confirmationResult = null;
   state.nav = user.role === 'mechanic' ? 'browse' : 'home';
   render();
-  toast('Welcome back, '+user.name.split(' ')[0]+'!', 'success', ROLE_META[user.role].icon);
+  toast('Welcome, '+user.name.split(' ')[0]+'!', 'success', ROLE_META[user.role].icon);
 }
 
 function logout(){
+  stopRealtimeDB();
+  fbAuth.signOut().catch(()=>{});
   session = null;
   localStorage.removeItem(SESSION_KEY);
-  state = { authTab:'login', selectedRole:'mechanic', nav:'browse', search:'', brandFilter:'All', categoryFilter:'All', authError:'' };
+  state = { authTab:'login', selectedRole:'mechanic', nav:'browse', search:'', brandFilter:'All', categoryFilter:'All', authError:'', otpStage:'phone', confirmationResult:null, pendingPhone:'' };
   render();
 }
 
@@ -1107,7 +1265,7 @@ function renderShell(){
       ${renderContent()}
     </div>
   </div>
-  <footer class="app-footer">PartsBaazar Prototype · All data stored locally in your browser · No real payments or deliveries</footer>
+  <footer class="app-footer">PartsBaazar Prototype · Live data synced via Firebase · Razorpay test-mode checkout (no real charges)</footer>
   <div class="overlay" id="cart-overlay"></div>
   <div class="drawer" id="cart-drawer">
     ${renderCartDrawer()}
@@ -1388,6 +1546,25 @@ function renderShopHome(){
   `;
 }
 
+function unitsSold(productId){
+  // how many units of this part have ever been ordered (any status) — used as a
+  // simple "is this thing actually moving" demand signal
+  return DB.orders.reduce((sum,o)=>{
+    const item = o.items.find(i=>i.productId===productId);
+    return sum + (item ? item.qty : 0);
+  }, 0);
+}
+
+function isSlowMoving(p){
+  // no orders at all yet on decent stock, or plenty of stock sitting against
+  // barely any demand — either way, price is likely the lever to pull
+  if(p.stock<=0) return false;
+  const sold = unitsSold(p.id);
+  if(sold===0 && p.stock>=3) return true;
+  if(p.stock>=10 && sold < p.stock*0.2) return true;
+  return false;
+}
+
 function renderShopInventory(){
   const myProducts = DB.products.filter(p=>p.shopOwnerId===session.id);
   return `
@@ -1400,18 +1577,28 @@ function renderShopInventory(){
     ${myProducts.length===0 ? `
       <div class="empty-state"><span class="e-icon">🧰</span><div class="e-title">No parts listed yet</div><div class="e-sub">Add your first part to start selling.</div></div>`
       : `<div class="data-table-wrap"><table>
-        <thead><tr><th>Part</th><th>Brand</th><th>Part No.</th><th>Price (₹)</th><th>Stock</th><th></th></tr></thead>
+        <thead><tr><th>Part</th><th>Brand</th><th>Part No.</th><th>Price (₹)</th><th>Stock</th><th>Status</th><th></th></tr></thead>
         <tbody>
-        ${myProducts.map(p=>`
-          <tr>
+        ${myProducts.map(p=>{
+          const slow = isSlowMoving(p);
+          return `
+          <tr class="${slow?'row-slow-moving':''}">
             <td>${p.emoji} ${esc(p.name)}</td>
             <td><span class="pc-brand-badge ${BRAND_CLASS[p.brand]}">${p.brand}</span></td>
             <td class="mono">${esc(p.partNumber)}</td>
-            <td><input class="inline-edit" type="number" min="0" value="${p.price}" data-price="${p.id}"></td>
+            <td>
+              <input class="inline-edit" type="number" min="0" value="${p.price}" data-price="${p.id}">
+              ${slow ? `<div class="discount-btns">
+                <button type="button" class="discount-btn" data-discount="${p.id}" data-pct="5">-5%</button>
+                <button type="button" class="discount-btn" data-discount="${p.id}" data-pct="10">-10%</button>
+                <button type="button" class="discount-btn" data-discount="${p.id}" data-pct="20">-20%</button>
+              </div>` : ''}
+            </td>
             <td><input class="inline-edit" type="number" min="0" value="${p.stock}" data-stock="${p.id}"></td>
+            <td>${slow ? `<span class="slow-flag">🐌 Not Moving</span>` : `<span class="ok-flag">✓ Selling</span>`}</td>
             <td><button class="btn btn-ghost btn-sm" data-save-stock="${p.id}">Save</button></td>
           </tr>
-        `).join('')}
+        `;}).join('')}
         </tbody>
       </table></div>`}
   `;
@@ -1610,32 +1797,26 @@ function bindShellEvents(){
   if(placeOrderBtn){
     placeOrderBtn.onclick = ()=>{
       if(cart.length===0) return;
-      // split cart by shop owner into separate orders
-      const byShop = {};
-      cart.forEach(item=>{
-        if(!byShop[item.shopOwnerId]) byShop[item.shopOwnerId] = [];
-        byShop[item.shopOwnerId].push(item);
+      if(!RAZORPAY_KEY_ID || RAZORPAY_KEY_ID.indexOf('YOUR_KEY_ID') !== -1){
+        toast('Add your Razorpay test Key Id in the code to enable checkout', 'error', '⚠️');
+        return;
+      }
+      const total = cart.reduce((s,i)=>s+i.qty*i.price,0);
+      const rzp = new Razorpay({
+        key: RAZORPAY_KEY_ID,
+        amount: Math.round(total*100), // paise
+        currency: 'INR',
+        name: 'PartsBaazar',
+        description: cart.length+' item(s) — spare parts order',
+        prefill: { name: session.name },
+        theme: { color: '#ff6a1a' },
+        handler: function(response){ finalizeOrder(response.razorpay_payment_id); },
+        modal: { ondismiss: function(){ toast('Payment cancelled', 'info', '✕'); } }
       });
-      Object.entries(byShop).forEach(([shopId, items])=>{
-        const orderId = 'ORD-' + Math.floor(1000+Math.random()*9000);
-        DB.orders.push({
-          id: orderId, mechanicId: session.id, shopOwnerId: shopId, deliveryBoyId: null,
-          items: items.map(i=>({productId:i.productId, name:i.name, emoji:i.emoji, qty:i.qty, price:i.price})),
-          status:'Placed', createdAt: Date.now()
-        });
-        // decrement stock
-        items.forEach(i=>{
-          const p = DB.products.find(x=>x.id===i.productId);
-          if(p) p.stock = Math.max(0, p.stock - i.qty);
-        });
+      rzp.on('payment.failed', function(response){
+        toast('Payment failed: '+((response.error && response.error.description) || 'please try again'), 'error', '⚠️');
       });
-      saveDB(DB);
-      cart = [];
-      saveCart();
-      closeCart();
-      fireConfetti();
-      state.nav = 'orders';
-      render();
+      rzp.open();
     };
   }
 
@@ -1654,10 +1835,8 @@ function bindShellEvents(){
       const orderId = el.dataset.dispatch;
       const select = document.getElementById('assign-select-'+orderId);
       const riderId = select ? select.value : null;
-      const o = DB.orders.find(x=>x.id===orderId);
-      if(o){ o.deliveryBoyId = riderId; o.status='Out for Delivery'; saveDB(DB); }
+      updateOrderDoc(orderId, {deliveryBoyId: riderId, status:'Out for Delivery'});
       toast('Dispatched to '+riderName(riderId), 'success', '🛵');
-      render();
     };
   });
   document.querySelectorAll('[data-deliver]').forEach(el=>{
@@ -1686,10 +1865,9 @@ function bindShellEvents(){
         const price = parseFloat(document.getElementById('np-price').value) || 0;
         const stock = parseInt(document.getElementById('np-stock').value) || 0;
         if(!name){ toast('Part name is required', 'error', '⚠️'); return; }
-        DB.products.push({id: uid('p'), name, brand, category, partNumber, price, stock, emoji: pickEmoji(category), shopOwnerId: session.id});
-        saveDB(DB);
+        addProductDoc({name, brand, category, partNumber, price, stock, emoji: pickEmoji(category), shopOwnerId: session.id});
         toast(name+' added to your inventory', 'success', '🧰');
-        render();
+        wrap.innerHTML = '';
       };
     };
   }
@@ -1700,11 +1878,24 @@ function bindShellEvents(){
       const stockInput = document.querySelector(`[data-stock="${pid}"]`);
       const p = DB.products.find(x=>x.id===pid);
       if(p){
-        p.price = parseFloat(priceInput.value) || p.price;
-        p.stock = Math.max(0, parseInt(stockInput.value) || 0);
-        saveDB(DB);
+        const price = parseFloat(priceInput.value) || p.price;
+        const stock = Math.max(0, parseInt(stockInput.value) || 0);
+        updateProductDoc(pid, {price, stock});
         toast('Stock updated for '+p.name, 'success', '📋');
       }
+    };
+  });
+
+  /* shop: quick price drop on slow-moving stock */
+  document.querySelectorAll('[data-discount]').forEach(el=>{
+    el.onclick = ()=>{
+      const pid = el.dataset.discount;
+      const pct = parseFloat(el.dataset.pct) || 0;
+      const p = DB.products.find(x=>x.id===pid);
+      if(!p) return;
+      const newPrice = Math.max(1, Math.round(p.price * (1 - pct/100)));
+      updateProductDoc(pid, {price: newPrice});
+      toast(p.name+' price dropped '+pct+'% to ₹'+newPrice+' to help it sell', 'success', '💸');
     };
   });
 }
@@ -1742,17 +1933,45 @@ function addProductFormHTML(){
 function updateOrderStatus(orderId, status){
   const o = DB.orders.find(x=>x.id===orderId);
   if(!o) return;
+  const patch = {status};
   // stock was deducted the moment the order was placed, so give it back
   // whenever an order dies before reaching the customer
   if((status==='Rejected' || status==='Cancelled') && o.status!=='Rejected' && o.status!=='Cancelled'){
     o.items.forEach(i=>{
-      const p = DB.products.find(x=>x.id===i.productId);
-      if(p) p.stock += i.qty;
+      // Atomic increment back — same race-safety reasoning as the deduction.
+      updateProductDoc(i.productId, {stock: firebase.firestore.FieldValue.increment(i.qty)});
     });
   }
-  o.status = status;
-  saveDB(DB);
+  updateOrderDoc(orderId, patch);
+}
+
+async function finalizeOrder(paymentId){
+  const byShop = {};
+  cart.forEach(item=>{
+    if(!byShop[item.shopOwnerId]) byShop[item.shopOwnerId] = [];
+    byShop[item.shopOwnerId].push(item);
+  });
+  const writes = [];
+  Object.entries(byShop).forEach(([shopId, items])=>{
+    writes.push(addOrderDoc({
+      mechanicId: session.id, shopOwnerId: shopId, deliveryBoyId: null,
+      items: items.map(i=>({productId:i.productId, name:i.name, emoji:i.emoji, qty:i.qty, price:i.price})),
+      status:'Placed', createdAt: Date.now(), paymentId: paymentId, paymentStatus:'Paid'
+    }));
+    items.forEach(i=>{
+      // Atomic server-side decrement — avoids the read-modify-write race where
+      // two mechanics ordering at once both read the same stock and oversell.
+      writes.push(updateProductDoc(i.productId, {stock: firebase.firestore.FieldValue.increment(-i.qty)}));
+    });
+  });
+  await Promise.all(writes);
+  cart = [];
+  saveCart();
+  closeCart();
+  fireConfetti();
+  state.nav = 'orders';
   render();
+  toast('Payment successful — order placed!', 'success', '💳');
 }
 
 function reorder(orderId){
@@ -1805,7 +2024,43 @@ document.addEventListener('keydown', (e)=>{
     if(drawer && drawer.classList.contains('show')) closeCart();
   }
 });
-render();
+
+function renderConnecting(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="auth-screen">
+      <div class="auth-wrap" style="text-align:center;">
+        <h1 class="brand-title">PARTS<span>BAAZAR</span></h1>
+        <p style="font-family:var(--font-mono); color:var(--steel-300); font-size:0.85rem; letter-spacing:0.1em; text-transform:uppercase; margin-top:16px;">
+          Connecting to live inventory…
+        </p>
+      </div>
+    </div>`;
+}
+
+function boot(){
+  render();
+}
+
+renderConnecting();
+
+/* Firestore rules require request.auth != null on every collection, so the
+   real-time listeners must not start until Firebase Auth has actually
+   resolved a signed-in user — starting them unconditionally on page load
+   (as before) fired permission-denied on all 3 collections immediately,
+   which is what produced the "Live sync unavailable" toast. */
+fbAuth.onAuthStateChanged((user)=>{
+  if(user){
+    startRealtimeDB();
+  } else {
+    // not signed in (or auth expired) — nothing to sync, and any stale
+    // local session is no longer valid against Firestore, so clear it
+    stopRealtimeDB();
+    if(session){ session = null; localStorage.removeItem(SESSION_KEY); }
+    render();
+  }
+});
 </script>
+
 </body>
 </html>
